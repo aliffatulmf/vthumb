@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import signal
 import sys
 import tempfile
@@ -271,13 +272,17 @@ def find_videos(target: Path, recursive: bool) -> list[Path]:
     """
     if target.is_file():
         return [target] if target.suffix.lower() in VIDEO_EXTENSIONS else []
-    pattern = "**/*" if recursive else "*"
     try:
-        return [
-            path
-            for path in target.glob(pattern)
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-        ]
+        results: list[Path] = []
+        with os.scandir(target) as entries:
+            for entry in entries:
+                if entry.is_file(follow_symlinks=False):
+                    path = Path(entry.path)
+                    if path.suffix.lower() in VIDEO_EXTENSIONS:
+                        results.append(path)
+                elif recursive and entry.is_dir(follow_symlinks=False):
+                    results.extend(find_videos(Path(entry.path), recursive))
+        return results
     except PermissionError:
         error_console.print(f"[yellow]Permission denied:[/] {target}")
         return []
