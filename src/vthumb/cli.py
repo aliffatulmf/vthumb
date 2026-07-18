@@ -102,7 +102,7 @@ class _ShutdownRequest:
 
 
 def _compute_usable_range(
-        duration: float, skip_start: float, skip_end: float
+    duration: float, skip_start: float, skip_end: float
 ) -> tuple[float, float, float]:
     """Compute the usable time range after applying skip offsets.
 
@@ -254,7 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}"
+        version=f"%(prog)s {__version__}",
     )
     return parser
 
@@ -332,12 +332,13 @@ def output_path(video: Path, output_dir: Path | None = None) -> Path:
 
 
 def snapshot_timestamps(
-        duration: float,
-        count: int, *,
-        skip_start: float = 10,
-        skip_end: float = 10,
-        usable_start: float | None = None,
-        usable_duration: float | None = None,
+    duration: float,
+    count: int,
+    *,
+    skip_start: float = 10,
+    skip_end: float = 10,
+    usable_start: float | None = None,
+    usable_duration: float | None = None,
 ) -> list[float]:
     """Return evenly spaced seek points within the usable video range.
 
@@ -358,9 +359,7 @@ def snapshot_timestamps(
         range is too short or count is zero.
     """
     if usable_start is None or usable_duration is None:
-        usable_start, _, usable_duration = _compute_usable_range(
-            duration, skip_start, skip_end
-        )
+        usable_start, _, usable_duration = _compute_usable_range(duration, skip_start, skip_end)
 
     if usable_duration <= 0 or count <= 0:
         return []
@@ -368,10 +367,7 @@ def snapshot_timestamps(
     usable_end = usable_start + usable_duration
     interval = usable_duration / count
     last_seekable = max(usable_end * 0.999, usable_end - 0.001)
-    return [
-        min(usable_start + interval * index, last_seekable)
-        for index in range(1, count + 1)
-    ]
+    return [min(usable_start + interval * index, last_seekable) for index in range(1, count + 1)]
 
 
 def create_thumbnail(
@@ -440,8 +436,12 @@ def create_thumbnail(
         tmp_path = Path(tmp_dir)
         frame_temp = str(tmp_path / "frame_%04d.jpg")
         timestamps = snapshot_timestamps(
-            duration, frame_count, skip_start=skip_start, skip_end=skip_end,
-            usable_start=usable_start, usable_duration=usable_duration,
+            duration,
+            frame_count,
+            skip_start=skip_start,
+            skip_end=skip_end,
+            usable_start=usable_start,
+            usable_duration=usable_duration,
         )
         video_str = str(video)
 
@@ -459,8 +459,13 @@ def create_thumbnail(
                 seconds = seek_time % 60
                 time_text = f"{minutes:02d}\\:{seconds:05.2f}"
                 stream = stream.drawtext(
-                    text=time_text, fontsize=14,
-                    fontcolor="white", borderw=1, bordercolor="black", x=5, y=5,
+                    text=time_text,
+                    fontsize=14,
+                    fontcolor="white",
+                    borderw=1,
+                    bordercolor="black",
+                    x=5,
+                    y=5,
                 )
 
             if accurate_seek:
@@ -478,9 +483,9 @@ def create_thumbnail(
                 )
             else:
                 out = ffmpeg.output(
-                    stream, str(frame_path),
-                    **{"an": None, "sn": None, "dn": None,
-                       "frames:v": 1, "q:v": quality},
+                    stream,
+                    str(frame_path),
+                    **{"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality},
                 )
             out.overwrite_output().run(quiet=verbosity == "quiet")
 
@@ -623,15 +628,14 @@ def main(argv: list[str] | None = None) -> int:
     failed_videos: list[tuple[Path, str]] = []
 
     with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
     ) as progress:
         task = progress.add_task("Processing videos...", total=len(jobs))
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
-                executor.submit(process_video, video, output, args): video
-                for video, output in jobs
+                executor.submit(process_video, video, output, args): video for video, output in jobs
             }
             pending = set(futures)
             cancelled_rest = False
