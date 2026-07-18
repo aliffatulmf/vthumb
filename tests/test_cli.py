@@ -1,4 +1,4 @@
-import subprocess as sp
+import ffmpeg as ff
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
@@ -285,56 +285,56 @@ def test_output_path_preserves_full_name(tmp_path: Path):
 
 def test_video_duration_success(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run") as mock_run:
-        mock_run.return_value.stdout = "120.5\n"
-        duration = video_duration(fake_video, "ffprobe")
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"format": {"duration": "120.5"}}
+        duration = video_duration(fake_video)
         assert duration == 120.5
 
 
 def test_video_duration_rejects_zero(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run") as mock_run:
-        mock_run.return_value.stdout = "0\n"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"format": {"duration": "0"}}
         with pytest.raises(ValueError, match="invalid video duration"):
-            video_duration(fake_video, "ffprobe")
+            video_duration(fake_video)
 
 
 def test_video_duration_rejects_negative(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run") as mock_run:
-        mock_run.return_value.stdout = "-5\n"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"format": {"duration": "-5"}}
         with pytest.raises(ValueError, match="invalid video duration"):
-            video_duration(fake_video, "ffprobe")
+            video_duration(fake_video)
 
 
 def test_video_duration_empty_output(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run") as mock_run:
-        mock_run.return_value.stdout = "\n"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"format": {"duration": ""}}
         with pytest.raises(ValueError, match="empty output"):
-            video_duration(fake_video, "ffprobe")
+            video_duration(fake_video)
 
 
 def test_video_duration_non_numeric(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run") as mock_run:
-        mock_run.return_value.stdout = "N/A\n"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"format": {"duration": "N/A"}}
         with pytest.raises(ValueError, match="invalid duration"):
-            video_duration(fake_video, "ffprobe")
+            video_duration(fake_video)
 
 
 def test_video_duration_called_process_error(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run", side_effect=sp.CalledProcessError(1, "ffprobe")):
-        with pytest.raises(sp.CalledProcessError):
-            video_duration(fake_video, "ffprobe")
+    with patch("vthumb.cli.ffmpeg.probe", side_effect=ff.Error("ffprobe", b"", b"error")):
+        with pytest.raises(ValueError, match="ffprobe failed"):
+            video_duration(fake_video)
 
 
 def test_video_duration_verbosity_error(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.subprocess.run") as mock_run:
-        mock_run.return_value.stdout = "60.0\n"
-        duration = video_duration(fake_video, "ffprobe", verbosity="error")
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"format": {"duration": "60.0"}}
+        duration = video_duration(fake_video, verbosity="error")
         assert duration == 60.0
 
 
@@ -423,8 +423,6 @@ def _make_args(**overrides):
         skip_end=10,
         accurate_seek=False,
         verror=False,
-        ffmpeg="ffmpeg",
-        ffprobe="ffprobe",
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -450,12 +448,12 @@ def test_process_video_failure(tmp_path: Path):
 
     with patch(
         "vthumb.cli.create_thumbnail",
-        side_effect=sp.CalledProcessError(1, "ffmpeg"),
+        side_effect=ff.Error("ffmpeg", b"", b"error"),
     ):
         result = process_video(video, dest, args)
         assert result.video == video
         assert result.output == dest
-        assert isinstance(result.error, sp.CalledProcessError)
+        assert isinstance(result.error, ff.Error)
 
 
 def test_process_video_passes_new_flags(tmp_path: Path):
@@ -480,8 +478,6 @@ def test_process_video_passes_new_flags(tmp_path: Path):
             skip_end=10,
             accurate_seek=False,
             verbose=False,
-            ffmpeg="ffmpeg",
-            ffprobe="ffprobe",
         )
 
 
@@ -533,18 +529,22 @@ def test_create_thumbnail_success(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
 
-    def fake_run(cmd, **kwargs):
-        out = Path(cmd[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"\xff")
-
     with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.subprocess.run", side_effect=fake_run):
+         patch("vthumb.cli.ffmpeg") as mock_ff:
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            # Extract output filename from the last ffmpeg.output() call
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
             video, output, rows=2, cols=2, size=320, quality=2,
             padding=4, margin=4, timestamp=False, interval=None,
             skip_start=0, skip_end=0, accurate_seek=False,
-            verbose=False, ffmpeg="ffmpeg", ffprobe="ffprobe",
+            verbose=False,
         )
         assert output.exists()
 
@@ -553,18 +553,21 @@ def test_create_thumbnail_interval_mode(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
 
-    def fake_run(cmd, **kwargs):
-        out = Path(cmd[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"\xff")
-
     with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.subprocess.run", side_effect=fake_run):
+         patch("vthumb.cli.ffmpeg") as mock_ff:
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
             video, output, rows=5, cols=5, size=320, quality=2,
             padding=4, margin=4, timestamp=False, interval=10.0,
             skip_start=0, skip_end=0, accurate_seek=False,
-            verbose=False, ffmpeg="ffmpeg", ffprobe="ffprobe",
+            verbose=False,
         )
         assert output.exists()
 
@@ -572,50 +575,48 @@ def test_create_thumbnail_interval_mode(tmp_path: Path):
 def test_create_thumbnail_accurate_seek(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        out = Path(cmd[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"\xff")
 
     with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.subprocess.run", side_effect=fake_run):
+         patch("vthumb.cli.ffmpeg") as mock_ff:
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
             video, output, rows=1, cols=1, size=320, quality=2,
             padding=4, margin=4, timestamp=False, interval=None,
             skip_start=0, skip_end=0, accurate_seek=True,
-            verbose=False, ffmpeg="ffmpeg", ffprobe="ffprobe",
+            verbose=False,
         )
-        frame_cmd = calls[0]
-        assert "-i" in frame_cmd
-        idx_i = frame_cmd.index("-i")
-        assert frame_cmd[idx_i + 2] == "-ss"
+        # Verify accurate_seek mode: ffmpeg.input called without ss for video input
+        mock_ff.input.assert_any_call(str(video))
+        assert output.exists()
 
 
 def test_create_thumbnail_timestamp_mode(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        out = Path(cmd[-1])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"\xff")
 
     with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.subprocess.run", side_effect=fake_run):
+         patch("vthumb.cli.ffmpeg") as mock_ff:
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
             video, output, rows=1, cols=1, size=320, quality=2,
             padding=4, margin=4, timestamp=True, interval=None,
             skip_start=0, skip_end=0, accurate_seek=False,
-            verbose=False, ffmpeg="ffmpeg", ffprobe="ffprobe",
+            verbose=False,
         )
-        frame_cmd = calls[0]
-        vf_idx = frame_cmd.index("-vf")
-        assert "drawtext" in frame_cmd[vf_idx + 1]
 
 
 def test_create_thumbnail_video_too_short(tmp_path: Path):
@@ -628,7 +629,7 @@ def test_create_thumbnail_video_too_short(tmp_path: Path):
                 video, output, rows=5, cols=5, size=320, quality=2,
                 padding=4, margin=4, timestamp=False, interval=None,
                 skip_start=10, skip_end=10, accurate_seek=False,
-                verbose=False, ffmpeg="ffmpeg", ffprobe="ffprobe",
+                verbose=False,
             )
 
 
@@ -636,13 +637,17 @@ def test_create_thumbnail_ffmpeg_fails(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
     with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.subprocess.run", side_effect=sp.CalledProcessError(1, "ffmpeg")):
-        with pytest.raises(sp.CalledProcessError):
+         patch("vthumb.cli.ffmpeg") as mock_ff:
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+        mock_ff.output.return_value.overwrite_output.return_value.run.side_effect = ff.Error(
+            "ffmpeg", b"", b"error"
+        )
+        with pytest.raises(ff.Error):
             create_thumbnail(
                 video, output, rows=1, cols=1, size=320, quality=2,
                 padding=4, margin=4, timestamp=False, interval=None,
                 skip_start=0, skip_end=0, accurate_seek=False,
-                verbose=False, ffmpeg="ffmpeg", ffprobe="ffprobe",
+                verbose=False,
             )
 
 

@@ -12,7 +12,8 @@ license = { text = "MIT" }
 authors = [{ name = "vthumb contributors" }]
 keywords = ["ffmpeg", "thumbnail", "video", "cli"]
 dependencies = [
-    "rich>=13.0",
+    "rich==15.0.0",
+    "ffmpeg-python==0.2.0",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -50,6 +51,6 @@ select = ["E", "F", "I", "W"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1",
-    "pytest-cov>=6.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
 ]
