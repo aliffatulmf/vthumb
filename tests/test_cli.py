@@ -8,6 +8,7 @@ import pytest
 from vthumb.cli import (
     VideoResult,
     _ShutdownRequest,
+    _compute_usable_range,
     build_parser,
     create_thumbnail,
     find_videos,
@@ -409,6 +410,37 @@ def test_snapshot_timestamps_with_precomputed_values():
     assert len(timestamps) == 4
     assert timestamps[0] == pytest.approx(20.0)
     assert timestamps[-1] == pytest.approx(49.999, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# _compute_usable_range
+# ---------------------------------------------------------------------------
+
+
+def test_compute_usable_range_normal():
+    start, end, duration = _compute_usable_range(100, 10, 10)
+    assert start == 10.0
+    assert end == 90.0
+    assert duration == 80.0
+
+
+def test_compute_usable_range_no_skip():
+    start, end, duration = _compute_usable_range(100, 0, 0)
+    assert start == 0.0
+    assert end == 100.0
+    assert duration == 100.0
+
+
+def test_compute_usable_range_skip_exceeds_duration():
+    # When skip exceeds duration, falls back to full range
+    start, end, duration = _compute_usable_range(10, 20, 20)
+    assert start == 0.0
+    assert end == 10.0
+    assert duration == 10.0
+
+
+def test_snapshot_timestamps_negative_count():
+    assert snapshot_timestamps(60, -5, skip_start=0, skip_end=0) == []
 
 
 # ---------------------------------------------------------------------------
