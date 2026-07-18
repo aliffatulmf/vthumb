@@ -1,8 +1,8 @@
-import ffmpeg as ff
-from argparse import Namespace
+from argparse import ArgumentTypeError, Namespace
 from pathlib import Path
 from unittest.mock import patch
 
+import ffmpeg as ff
 import pytest
 
 from vthumb.cli import (
@@ -31,17 +31,17 @@ def test_positive_int():
 
 
 def test_positive_int_rejects_zero():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         positive_int("0")
 
 
 def test_positive_int_rejects_negative():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         positive_int("-5")
 
 
 def test_positive_int_rejects_non_numeric():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         positive_int("abc")
 
 
@@ -56,22 +56,22 @@ def test_non_negative_float_decimals():
 
 
 def test_non_negative_float_rejects_negative():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         non_negative_float("-1.5")
 
 
 def test_non_negative_float_rejects_non_numeric():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         non_negative_float("abc")
 
 
 def test_non_negative_float_rejects_inf():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         non_negative_float("inf")
 
 
 def test_non_negative_float_rejects_nan():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         non_negative_float("nan")
 
 
@@ -82,17 +82,17 @@ def test_jpeg_quality_valid():
 
 
 def test_jpeg_quality_rejects_zero():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         jpeg_quality("0")
 
 
 def test_jpeg_quality_rejects_over_31():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         jpeg_quality("32")
 
 
 def test_jpeg_quality_rejects_non_numeric():
-    with pytest.raises(Exception):
+    with pytest.raises(ArgumentTypeError):
         jpeg_quality("abc")
 
 
@@ -230,15 +230,19 @@ def test_find_videos_only_returns_supported_files(tmp_path: Path):
     (nested / "clip.mkv").touch()
     (tmp_path / "recording.ts").touch()
 
-    assert sorted(find_videos(tmp_path, recursive=False)) == sorted([
-        tmp_path / "movie.mp4",
-        tmp_path / "recording.ts",
-    ])
-    assert sorted(find_videos(tmp_path, recursive=True)) == sorted([
-        tmp_path / "movie.mp4",
-        nested / "clip.mkv",
-        tmp_path / "recording.ts",
-    ])
+    assert sorted(find_videos(tmp_path, recursive=False)) == sorted(
+        [
+            tmp_path / "movie.mp4",
+            tmp_path / "recording.ts",
+        ]
+    )
+    assert sorted(find_videos(tmp_path, recursive=True)) == sorted(
+        [
+            tmp_path / "movie.mp4",
+            nested / "clip.mkv",
+            tmp_path / "recording.ts",
+        ]
+    )
 
 
 def test_find_videos_single_file(tmp_path: Path):
@@ -395,8 +399,12 @@ def test_snapshot_timestamps_skip_exceeds_duration():
 
 def test_snapshot_timestamps_with_precomputed_values():
     timestamps = snapshot_timestamps(
-        60, 4, skip_start=10, skip_end=10,
-        usable_start=10.0, usable_duration=40.0,
+        60,
+        4,
+        skip_start=10,
+        skip_end=10,
+        usable_start=10.0,
+        usable_duration=40.0,
     )
     assert len(timestamps) == 4
     assert timestamps[0] == pytest.approx(20.0)
@@ -529,8 +537,10 @@ def test_create_thumbnail_success(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
 
-    with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.ffmpeg") as mock_ff:
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
         mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
 
         def fake_run(**kwargs):
@@ -541,9 +551,19 @@ def test_create_thumbnail_success(tmp_path: Path):
 
         mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
-            video, output, rows=2, cols=2, size=320, quality=2,
-            padding=4, margin=4, timestamp=False, interval=None,
-            skip_start=0, skip_end=0, accurate_seek=False,
+            video,
+            output,
+            rows=2,
+            cols=2,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
             verbose=False,
         )
         assert output.exists()
@@ -553,8 +573,10 @@ def test_create_thumbnail_interval_mode(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
 
-    with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.ffmpeg") as mock_ff:
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
         mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
 
         def fake_run(**kwargs):
@@ -564,9 +586,19 @@ def test_create_thumbnail_interval_mode(tmp_path: Path):
 
         mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
-            video, output, rows=5, cols=5, size=320, quality=2,
-            padding=4, margin=4, timestamp=False, interval=10.0,
-            skip_start=0, skip_end=0, accurate_seek=False,
+            video,
+            output,
+            rows=5,
+            cols=5,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=10.0,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
             verbose=False,
         )
         assert output.exists()
@@ -576,8 +608,10 @@ def test_create_thumbnail_accurate_seek(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
 
-    with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.ffmpeg") as mock_ff:
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
         mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
 
         def fake_run(**kwargs):
@@ -587,9 +621,19 @@ def test_create_thumbnail_accurate_seek(tmp_path: Path):
 
         mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
-            video, output, rows=1, cols=1, size=320, quality=2,
-            padding=4, margin=4, timestamp=False, interval=None,
-            skip_start=0, skip_end=0, accurate_seek=True,
+            video,
+            output,
+            rows=1,
+            cols=1,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=True,
             verbose=False,
         )
         # Verify accurate_seek mode: ffmpeg.input called without ss for video input
@@ -601,8 +645,10 @@ def test_create_thumbnail_timestamp_mode(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
 
-    with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.ffmpeg") as mock_ff:
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
         mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
 
         def fake_run(**kwargs):
@@ -612,9 +658,19 @@ def test_create_thumbnail_timestamp_mode(tmp_path: Path):
 
         mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
         create_thumbnail(
-            video, output, rows=1, cols=1, size=320, quality=2,
-            padding=4, margin=4, timestamp=True, interval=None,
-            skip_start=0, skip_end=0, accurate_seek=False,
+            video,
+            output,
+            rows=1,
+            cols=1,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=True,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
             verbose=False,
         )
 
@@ -626,9 +682,19 @@ def test_create_thumbnail_video_too_short(tmp_path: Path):
     with patch("vthumb.cli.video_duration", return_value=0.0):
         with pytest.raises(ValueError, match="too short"):
             create_thumbnail(
-                video, output, rows=5, cols=5, size=320, quality=2,
-                padding=4, margin=4, timestamp=False, interval=None,
-                skip_start=10, skip_end=10, accurate_seek=False,
+                video,
+                output,
+                rows=5,
+                cols=5,
+                size=320,
+                quality=2,
+                padding=4,
+                margin=4,
+                timestamp=False,
+                interval=None,
+                skip_start=10,
+                skip_end=10,
+                accurate_seek=False,
                 verbose=False,
             )
 
@@ -636,17 +702,29 @@ def test_create_thumbnail_video_too_short(tmp_path: Path):
 def test_create_thumbnail_ffmpeg_fails(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
-    with patch("vthumb.cli.video_duration", return_value=60.0), \
-         patch("vthumb.cli.ffmpeg") as mock_ff:
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
         mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
         mock_ff.output.return_value.overwrite_output.return_value.run.side_effect = ff.Error(
             "ffmpeg", b"", b"error"
         )
         with pytest.raises(ff.Error):
             create_thumbnail(
-                video, output, rows=1, cols=1, size=320, quality=2,
-                padding=4, margin=4, timestamp=False, interval=None,
-                skip_start=0, skip_end=0, accurate_seek=False,
+                video,
+                output,
+                rows=1,
+                cols=1,
+                size=320,
+                quality=2,
+                padding=4,
+                margin=4,
+                timestamp=False,
+                interval=None,
+                skip_start=0,
+                skip_end=0,
+                accurate_seek=False,
                 verbose=False,
             )
 
@@ -677,8 +755,10 @@ def test_main_all_exist_no_overwrite(tmp_path: Path):
 def test_main_creates_thumbnails(tmp_path: Path):
     video = tmp_path / "video.mp4"
     video.touch()
-    with patch("vthumb.cli.process_video") as mock_pv, \
-         patch("vthumb.cli.video_duration", return_value=60.0):
+    with (
+        patch("vthumb.cli.process_video") as mock_pv,
+        patch("vthumb.cli.video_duration", return_value=60.0),
+    ):
         mock_pv.return_value = VideoResult(video=video, output=video.with_suffix(".mp4.jpg"))
         result = main([str(video)])
         assert result == 0
