@@ -651,7 +651,16 @@ def main(argv: list[str] | None = None) -> int:
                     pending.clear()
                     cancelled_rest = True
                 try:
-                    result = future.result()
+                    result = future.result(timeout=300)
+                except TimeoutError:
+                    vid = futures[future]
+                    future.cancel()
+                    failed += 1
+                    failed_videos.append((vid, "Processing timed out after 5 minutes"))
+                    progress.update(task, description=f"[red]Timeout:[/] {vid.name}")
+                    progress.advance(task)
+                    pending.discard(future)
+                    continue
                 except Exception as exc:
                     vid = futures[future]
                     failed += 1
