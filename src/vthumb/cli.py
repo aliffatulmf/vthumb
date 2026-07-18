@@ -471,25 +471,10 @@ def create_thumbnail(
                     y=5,
                 )
 
+            out_kwargs = {"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality}
             if accurate_seek:
-                out = ffmpeg.output(
-                    stream,
-                    str(frame_path),
-                    **{
-                        "an": None,
-                        "sn": None,
-                        "dn": None,
-                        "frames:v": 1,
-                        "q:v": quality,
-                        "ss": f"{seek_time:.6f}",
-                    },
-                )
-            else:
-                out = ffmpeg.output(
-                    stream,
-                    str(frame_path),
-                    **{"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality},
-                )
+                out_kwargs["ss"] = f"{seek_time:.6f}"
+            out = ffmpeg.output(stream, str(frame_path), **out_kwargs)
             out.overwrite_output().run(quiet=verbosity == "quiet")
 
         if interval and interval > 0:
