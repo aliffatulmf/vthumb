@@ -9,6 +9,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import ffmpeg
 from rich.console import Console
@@ -288,7 +289,7 @@ def find_videos(target: Path, recursive: bool) -> list[Path]:
         return []
 
 
-def video_duration(video: Path, verbosity: str = "quiet") -> float:
+def video_duration(video: Path, verbosity: Literal["quiet", "error"] = "quiet") -> float:
     """Get the duration of a video in seconds via ffprobe.
 
     Args:
@@ -302,7 +303,7 @@ def video_duration(video: Path, verbosity: str = "quiet") -> float:
         ValueError: If the reported duration is <= 0 or output is invalid.
         ffmpeg.Error: If ffprobe fails.
     """
-    kwargs: dict = {}
+    kwargs: dict[str, str] = {}
     if verbosity == "error":
         kwargs["v"] = "error"
     try:
@@ -537,7 +538,7 @@ def process_video(
         )
     except (
         ffmpeg.Error,
-        ValueError, FileNotFoundError, OSError,
+        ValueError, OSError,
     ) as exc:
         return VideoResult(video=video, output=output, error=exc)
     return VideoResult(video=video, output=output)
