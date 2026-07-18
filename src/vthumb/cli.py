@@ -596,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
 
     videos = sorted(
         {video for target in targets for video in find_videos(target, args.recursive)},
-        key=lambda path: str(path).lower(),
+        key=lambda path: path.parts,
     )
     if not videos:
         error_console.print("[bold red]No supported video files found to process.[/]")
