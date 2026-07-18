@@ -427,8 +427,6 @@ def create_thumbnail(
     else:
         frame_count = rows * cols
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-
     if usable_duration <= 0:
         raise ValueError("video too short to generate thumbnails with the given skip values")
 
