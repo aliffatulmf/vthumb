@@ -108,6 +108,11 @@ def _compute_usable_range(
 ) -> tuple[float, float, float]:
     """Compute the usable time range after applying skip offsets.
 
+    Args:
+        duration: Total video duration in seconds.
+        skip_start: Seconds to skip from the start of the video.
+        skip_end: Seconds to skip from the end of the video.
+
     Returns:
         A tuple of (usable_start, usable_end, usable_duration).
     """
@@ -372,6 +377,8 @@ def snapshot_timestamps(
 
     usable_end = usable_start + usable_duration
     interval = usable_duration / count
+    # Avoid seeking to the unseekable EOF frame by clamping to 99.9% of duration
+    # or 1ms before EOF, whichever is less aggressive
     last_seekable = max(usable_end * 0.999, usable_end - 0.001)
     return [min(usable_start + interval * index, last_seekable) for index in range(1, count + 1)]
 
@@ -461,6 +468,7 @@ def create_thumbnail(
             if timestamp:
                 minutes = int(seek_time // 60)
                 seconds = seek_time % 60
+                # Backslash escapes colon for ffmpeg drawtext filter
                 time_text = f"{minutes:02d}\\:{seconds:05.2f}"
                 stream = stream.drawtext(
                     text=time_text,
