@@ -91,7 +91,7 @@ class VideoResult:
 
 @dataclass
 class _ShutdownRequest:
-    """Thread-safe flag for graceful shutdown."""
+    """Flag for graceful shutdown."""
 
     requested: bool = field(default=False, init=False)
 
