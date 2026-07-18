@@ -297,7 +297,7 @@ def video_duration(video: Path, verbosity: str = "quiet") -> float:
         ValueError: If the reported duration is <= 0 or output is invalid.
         ffmpeg.Error: If ffprobe fails.
     """
-    kwargs: dict = {"show_entries": "format=duration", "of": "default=noprint_wrappers=1:nokey=1"}
+    kwargs: dict = {}
     if verbosity == "error":
         kwargs["v"] = "error"
     try:
@@ -451,9 +451,9 @@ def create_thumbnail(
             if accurate_seek:
                 inp = ffmpeg.input(video_str)
             else:
-                inp = ffmpeg.input(video_str, ss=f"{seek_time:.6f}", noaccurate_seek=None)
+                inp = ffmpeg.input(video_str, ss=f"{seek_time:.6f}")
 
-            stream = inp.video().filter("scale", size, -2)
+            stream = inp.video.filter("scale", size, -2)
             if timestamp:
                 minutes = int(seek_time // 60)
                 seconds = seek_time % 60
@@ -465,14 +465,21 @@ def create_thumbnail(
 
             if accurate_seek:
                 out = ffmpeg.output(
-                    stream, str(frame_path),
-                    **{"map": "0:v:0", "an": None, "sn": None, "dn": None,
-                       "frames:v": 1, "q:v": quality, "ss": f"{seek_time:.6f}"},
+                    stream,
+                    str(frame_path),
+                    **{
+                        "an": None,
+                        "sn": None,
+                        "dn": None,
+                        "frames:v": 1,
+                        "q:v": quality,
+                        "ss": f"{seek_time:.6f}",
+                    },
                 )
             else:
                 out = ffmpeg.output(
                     stream, str(frame_path),
-                    **{"map": "0:v:0", "an": None, "sn": None, "dn": None,
+                    **{"an": None, "sn": None, "dn": None,
                        "frames:v": 1, "q:v": quality},
                 )
             out.overwrite_output().run(quiet=verbosity == "quiet")
@@ -486,16 +493,16 @@ def create_thumbnail(
         tile_margin = round(margin)
 
         inp = ffmpeg.input(frame_temp, framerate=1)
-        stream = inp.video().filter(
+        stream = inp.video.filter(
             "tile",
             f"{effective_cols}x{effective_rows}",
             padding=tile_padding,
             margin=tile_margin,
         )
         out = ffmpeg.output(
-            stream, str(output),
-            **{"map": "0:v:0", "an": None, "sn": None, "dn": None,
-               "frames:v": 1, "q:v": quality},
+            stream,
+            str(output),
+            **{"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality},
         )
         out.overwrite_output().run(quiet=verbosity == "quiet")
 
