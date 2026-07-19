@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import argparse
 import math
-import shutil
+import os
 import signal
-import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
+import ffmpeg
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
@@ -91,7 +92,7 @@ class VideoResult:
 
 @dataclass
 class _ShutdownRequest:
-    """Thread-safe flag for graceful shutdown."""
+    """Flag for graceful shutdown."""
 
     requested: bool = field(default=False, init=False)
 
@@ -103,9 +104,14 @@ class _ShutdownRequest:
 
 
 def _compute_usable_range(
-        duration: float, skip_start: float, skip_end: float
+    duration: float, skip_start: float, skip_end: float
 ) -> tuple[float, float, float]:
     """Compute the usable time range after applying skip offsets.
+
+    Args:
+        duration: Total video duration in seconds.
+        skip_start: Seconds to skip from the start of the video.
+        skip_end: Seconds to skip from the end of the video.
 
     Returns:
         A tuple of (usable_start, usable_end, usable_duration).
@@ -253,19 +259,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="disable colored output",
     )
     parser.add_argument(
-        "--ffmpeg",
-        default="ffmpeg",
-        help="path to ffmpeg executable",
-    )
-    parser.add_argument(
-        "--ffprobe",
-        default="ffprobe",
-        help="path to ffprobe executable"
-    )
-    parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}"
+        version=f"%(prog)s {__version__}",
     )
     return parser
 
@@ -282,45 +278,44 @@ def find_videos(target: Path, recursive: bool) -> list[Path]:
     """
     if target.is_file():
         return [target] if target.suffix.lower() in VIDEO_EXTENSIONS else []
-    pattern = "**/*" if recursive else "*"
     try:
-        return [
-            path
-            for path in target.glob(pattern)
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-        ]
+        results: list[Path] = []
+        with os.scandir(target) as entries:
+            for entry in entries:
+                if entry.is_file(follow_symlinks=False):
+                    path = Path(entry.path)
+                    if path.suffix.lower() in VIDEO_EXTENSIONS:
+                        results.append(path)
+                elif recursive and entry.is_dir(follow_symlinks=False):
+                    results.extend(find_videos(Path(entry.path), recursive))
+        return results
     except PermissionError:
         error_console.print(f"[yellow]Permission denied:[/] {target}")
         return []
 
 
-def video_duration(video: Path, ffprobe: str, verbosity: str = "quiet") -> float:
+def video_duration(video: Path, verbosity: Literal["quiet", "error"] = "quiet") -> float:
     """Get the duration of a video in seconds via ffprobe.
 
     Args:
         video: Path to the video file.
-        ffprobe: Path to the ffprobe executable.
         verbosity: FFmpeg verbosity level (``"quiet"`` or ``"error"``).
 
     Returns:
         Duration in seconds.
 
     Raises:
-        ValueError: If the reported duration is <= 0.
-        subprocess.CalledProcessError: If ffprobe fails.
+        ValueError: If the reported duration is <= 0 or output is invalid.
+        ffmpeg.Error: If ffprobe fails.
     """
-    command = [
-        ffprobe,
-        "-v",
-        verbosity,
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(video),
-    ]
-    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
-    raw = result.stdout.strip()
+    kwargs: dict[str, str] = {}
+    if verbosity == "error":
+        kwargs["v"] = "error"
+    try:
+        probe = ffmpeg.probe(str(video), **kwargs)
+    except ffmpeg.Error as exc:
+        raise ValueError(f"ffprobe failed for {video.name}") from exc
+    raw = probe["format"]["duration"]
     if not raw:
         raise ValueError(f"ffprobe returned empty output for {video.name}")
     try:
@@ -343,17 +338,23 @@ def output_path(video: Path, output_dir: Path | None = None) -> Path:
     Returns:
         Full path to the output JPEG file.
     """
-    filename = f"{video.name}.jpg"
-    return (output_dir / filename) if output_dir else video.with_name(filename)
+    if output_dir:
+        # Use parent dir name as prefix to avoid collisions when
+        # videos from different folders share the same filename.
+        prefix = video.parent.name
+        filename = f"{prefix}__{video.name}.jpg"
+        return output_dir / filename
+    return video.with_name(f"{video.name}.jpg")
 
 
 def snapshot_timestamps(
-        duration: float,
-        count: int, *,
-        skip_start: float = 10,
-        skip_end: float = 10,
-        usable_start: float | None = None,
-        usable_duration: float | None = None,
+    duration: float,
+    count: int,
+    *,
+    skip_start: float = 10,
+    skip_end: float = 10,
+    usable_start: float | None = None,
+    usable_duration: float | None = None,
 ) -> list[float]:
     """Return evenly spaced seek points within the usable video range.
 
@@ -374,20 +375,17 @@ def snapshot_timestamps(
         range is too short or count is zero.
     """
     if usable_start is None or usable_duration is None:
-        usable_start, _, usable_duration = _compute_usable_range(
-            duration, skip_start, skip_end
-        )
+        usable_start, _, usable_duration = _compute_usable_range(duration, skip_start, skip_end)
 
     if usable_duration <= 0 or count <= 0:
         return []
 
     usable_end = usable_start + usable_duration
     interval = usable_duration / count
+    # Avoid seeking to the unseekable EOF frame by clamping to 99.9% of duration
+    # or 1ms before EOF, whichever is less aggressive
     last_seekable = max(usable_end * 0.999, usable_end - 0.001)
-    return [
-        min(usable_start + interval * index, last_seekable)
-        for index in range(1, count + 1)
-    ]
+    return [min(usable_start + interval * index, last_seekable) for index in range(1, count + 1)]
 
 
 def create_thumbnail(
@@ -406,8 +404,6 @@ def create_thumbnail(
         skip_end: float,
         accurate_seek: bool,
         verbose: bool,
-        ffmpeg: str,
-        ffprobe: str,
 ) -> None:
     """Create a JPEG contact sheet from a video.
 
@@ -432,16 +428,14 @@ def create_thumbnail(
             If False, use fast keyframe seeks before -i.
         verbose: If True, use ``-v error`` for ffmpeg/ffprobe. If False,
             use ``-v quiet`` to suppress output.
-        ffmpeg: Path to the ffmpeg executable.
-        ffprobe: Path to the ffprobe executable.
 
     Raises:
         ValueError: If the video is too short for the given skip values.
-        subprocess.CalledProcessError: If ffmpeg or ffprobe fails.
+        ffmpeg.Error: If ffmpeg or ffprobe fails.
     """
     verbosity = "error" if verbose else "quiet"
 
-    duration = video_duration(video, ffprobe, verbosity)
+    duration = video_duration(video, verbosity)
     usable_start, usable_end, usable_duration = _compute_usable_range(
         duration, skip_start, skip_end
     )
@@ -451,8 +445,6 @@ def create_thumbnail(
     else:
         frame_count = rows * cols
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-
     if usable_duration <= 0:
         raise ValueError("video too short to generate thumbnails with the given skip values")
 
@@ -460,35 +452,44 @@ def create_thumbnail(
         tmp_path = Path(tmp_dir)
         frame_temp = str(tmp_path / "frame_%04d.jpg")
         timestamps = snapshot_timestamps(
-            duration, frame_count, skip_start=skip_start, skip_end=skip_end,
-            usable_start=usable_start, usable_duration=usable_duration,
+            duration,
+            frame_count,
+            skip_start=skip_start,
+            skip_end=skip_end,
+            usable_start=usable_start,
+            usable_duration=usable_duration,
         )
-        base_args = [ffmpeg, "-hide_banner", "-v", verbosity, "-y"]
-        output_args = ["-map", "0:v:0", "-an", "-sn", "-dn"]
         video_str = str(video)
-        static_suffix = ["-frames:v", "1", "-q:v", str(quality)]
-        static_vf = f"scale={size}:-2"
+
         for index, seek_time in enumerate(timestamps, start=1):
             frame_path = tmp_path / f"frame_{index:04d}.jpg"
-            command = base_args.copy()
+
             if accurate_seek:
-                command.extend(["-i", video_str, "-ss", f"{seek_time:.6f}"])
+                inp = ffmpeg.input(video_str)
             else:
-                command.extend(["-ss", f"{seek_time:.6f}", "-noaccurate_seek", "-i", video_str])
+                inp = ffmpeg.input(video_str, ss=f"{seek_time:.6f}")
+
+            stream = inp.video.filter("scale", size, -2)
             if timestamp:
                 minutes = int(seek_time // 60)
                 seconds = seek_time % 60
+                # Backslash escapes colon for ffmpeg drawtext filter
                 time_text = f"{minutes:02d}\\:{seconds:05.2f}"
-                vf = (
-                    f"scale={size}:-2,"
-                    f"drawtext=text='{time_text}':fontsize=14:"
-                    f"fontcolor=white:borderw=1:bordercolor=black:x=5:y=5"
+                stream = stream.drawtext(
+                    text=time_text,
+                    fontsize=14,
+                    fontcolor="white",
+                    borderw=1,
+                    bordercolor="black",
+                    x=5,
+                    y=5,
                 )
-            else:
-                vf = static_vf
-            command.extend(output_args)
-            command.extend(["-vf", vf, *static_suffix, str(frame_path)])
-            subprocess.run(command, check=True, capture_output=True, timeout=120)
+
+            out_kwargs = {"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality}
+            if accurate_seek:
+                out_kwargs["ss"] = f"{seek_time:.6f}"
+            out = ffmpeg.output(stream, str(frame_path), **out_kwargs)
+            out.overwrite_output().run(quiet=verbosity == "quiet")
 
         if interval and interval > 0:
             effective_rows, effective_cols = 1, frame_count
@@ -497,34 +498,20 @@ def create_thumbnail(
 
         tile_padding = round(padding)
         tile_margin = round(margin)
-        filters = (
-            f"tile={effective_cols}x{effective_rows}"
-            f":padding={tile_padding}:margin={tile_margin}"
+
+        inp = ffmpeg.input(frame_temp, framerate=1)
+        stream = inp.video.filter(
+            "tile",
+            f"{effective_cols}x{effective_rows}",
+            padding=tile_padding,
+            margin=tile_margin,
         )
-        command = [
-            ffmpeg,
-            "-hide_banner",
-            "-v",
-            verbosity,
-            "-y",
-            "-framerate",
-            "1",
-            "-i",
-            frame_temp,
-            "-map",
-            "0:v:0",
-            "-an",
-            "-sn",
-            "-dn",
-            "-vf",
-            filters,
-            "-frames:v",
-            "1",
-            "-q:v",
-            str(quality),
+        out = ffmpeg.output(
+            stream,
             str(output),
-        ]
-        subprocess.run(command, check=True, capture_output=True, timeout=120)
+            **{"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality},
+        )
+        out.overwrite_output().run(quiet=verbosity == "quiet")
 
         if not output.exists() or output.stat().st_size == 0:
             raise ValueError(f"ffmpeg produced empty or missing output: {output}")
@@ -561,12 +548,10 @@ def process_video(
             skip_end=args.skip_end,
             accurate_seek=args.accurate_seek,
             verbose=args.verror,
-            ffmpeg=args.ffmpeg,
-            ffprobe=args.ffprobe,
         )
     except (
-        subprocess.CalledProcessError, subprocess.TimeoutExpired,
-        ValueError, FileNotFoundError, OSError,
+        ffmpeg.Error,
+        ValueError, OSError,
     ) as exc:
         return VideoResult(video=video, output=output, error=exc)
     return VideoResult(video=video, output=output)
@@ -600,12 +585,6 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         error_console.print(f"[bold red]Target not found:[/] {missing}")
         return 2
-    if not shutil.which(args.ffmpeg) and not Path(args.ffmpeg).is_file():
-        error_console.print(f"[bold red]ffmpeg not found:[/] {args.ffmpeg}")
-        return 2
-    if not shutil.which(args.ffprobe) and not Path(args.ffprobe).is_file():
-        error_console.print(f"[bold red]ffprobe not found:[/] {args.ffprobe}")
-        return 2
 
     if output_dir and not output_dir.exists():
         try:
@@ -616,7 +595,7 @@ def main(argv: list[str] | None = None) -> int:
 
     videos = sorted(
         {video for target in targets for video in find_videos(target, args.recursive)},
-        key=lambda path: str(path).lower(),
+        key=lambda path: path.parts,
     )
     if not videos:
         error_console.print("[bold red]No supported video files found to process.[/]")
@@ -651,19 +630,19 @@ def main(argv: list[str] | None = None) -> int:
     failed_videos: list[tuple[Path, str]] = []
 
     with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
     ) as progress:
         task = progress.add_task("Processing videos...", total=len(jobs))
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
-                executor.submit(process_video, video, output, args): video
-                for video, output in jobs
+                executor.submit(process_video, video, output, args): video for video, output in jobs
             }
             pending = set(futures)
             cancelled_rest = False
             for future in as_completed(futures):
+                pending.discard(future)
                 if shutdown.is_set() and not cancelled_rest:
                     # Cancel futures that haven't started yet.
                     for p in pending:
@@ -672,16 +651,17 @@ def main(argv: list[str] | None = None) -> int:
                     pending.clear()
                     cancelled_rest = True
                 try:
-                    result = future.result()
-                except Exception as exc:
+                    result = future.result(timeout=300)
+                except (TimeoutError, Exception) as exc:
                     vid = futures[future]
+                    if isinstance(exc, TimeoutError):
+                        future.cancel()
                     failed += 1
-                    failed_videos.append((vid, str(exc)))
+                    msg = "Processing timed out after 5 minutes" if isinstance(exc, TimeoutError) else str(exc) #noqa
+                    failed_videos.append((vid, msg))
                     progress.update(task, description=f"[red]Failed:[/] {vid.name}")
                     progress.advance(task)
-                    pending.discard(future)
                     continue
-                pending.discard(future)
                 if result.error:
                     failed += 1
                     failed_videos.append((result.video, str(result.error)))
