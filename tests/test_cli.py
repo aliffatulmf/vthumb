@@ -7,8 +7,8 @@ import pytest
 
 from vthumb.cli import (
     VideoResult,
-    _ShutdownRequest,
     _compute_usable_range,
+    _ShutdownRequest,
     build_parser,
     create_thumbnail,
     find_videos,
@@ -272,15 +272,51 @@ def test_output_path_defaults_to_video_location(tmp_path: Path):
 
 
 def test_output_path_with_output_dir(tmp_path: Path):
-    video = tmp_path / "video.mp4"
+    folder = tmp_path / "videos"
+    folder.mkdir()
+    video = folder / "video.mp4"
     out_dir = tmp_path / "output"
     out_dir.mkdir()
-    assert output_path(video, out_dir) == out_dir / "video.mp4.jpg"
+    assert output_path(video, out_dir) == out_dir / "videos__video.mp4.jpg"
 
 
 def test_output_path_preserves_full_name(tmp_path: Path):
     video = tmp_path / "my.movie.file.mkv"
     assert output_path(video) == tmp_path / "my.movie.file.mkv.jpg"
+
+
+def test_output_path_no_collision_with_output_dir(tmp_path: Path):
+    folder1 = tmp_path / "folder1"
+    folder2 = tmp_path / "folder2"
+    folder1.mkdir()
+    folder2.mkdir()
+    video1 = folder1 / "video.mp4"
+    video2 = folder2 / "video.mp4"
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+
+    result1 = output_path(video1, out_dir)
+    result2 = output_path(video2, out_dir)
+
+    assert result1 != result2
+    assert result1.name == "folder1__video.mp4.jpg"
+    assert result2.name == "folder2__video.mp4.jpg"
+
+
+def test_output_path_same_folder_different_files(tmp_path: Path):
+    folder = tmp_path / "videos"
+    folder.mkdir()
+    video1 = folder / "clip1.mp4"
+    video2 = folder / "clip2.mp4"
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+
+    result1 = output_path(video1, out_dir)
+    result2 = output_path(video2, out_dir)
+
+    assert result1 != result2
+    assert result1.name == "videos__clip1.mp4.jpg"
+    assert result2.name == "videos__clip2.mp4.jpg"
 
 
 # ---------------------------------------------------------------------------

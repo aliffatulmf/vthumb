@@ -338,8 +338,13 @@ def output_path(video: Path, output_dir: Path | None = None) -> Path:
     Returns:
         Full path to the output JPEG file.
     """
-    filename = f"{video.name}.jpg"
-    return (output_dir / filename) if output_dir else video.with_name(filename)
+    if output_dir:
+        # Use parent dir name as prefix to avoid collisions when
+        # videos from different folders share the same filename.
+        prefix = video.parent.name
+        filename = f"{prefix}__{video.name}.jpg"
+        return output_dir / filename
+    return video.with_name(f"{video.name}.jpg")
 
 
 def snapshot_timestamps(
