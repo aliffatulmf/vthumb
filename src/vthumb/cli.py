@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,17 +91,17 @@ class VideoResult:
     error: Exception | None = None
 
 
-@dataclass
 class _ShutdownRequest:
-    """Flag for graceful shutdown."""
+    """Thread-safe flag for graceful shutdown."""
 
-    requested: bool = field(default=False, init=False)
+    def __init__(self) -> None:
+        self._event = threading.Event()
 
     def request(self) -> None:
-        self.requested = True
+        self._event.set()
 
     def is_set(self) -> bool:
-        return self.requested
+        return self._event.is_set()
 
 
 def _compute_usable_range(
@@ -448,8 +449,13 @@ def create_thumbnail(
     if usable_duration <= 0:
         raise ValueError("video too short to generate thumbnails with the given skip values")
 
-    with tempfile.TemporaryDirectory(prefix="vthumb-", ignore_cleanup_errors=True) as tmp_dir:
-        tmp_path = Path(tmp_dir)
+    try:
+        tmp_dir = tempfile.TemporaryDirectory(prefix="vthumb-", ignore_cleanup_errors=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"cannot create temporary directory: {exc}") from exc
+
+    with tmp_dir:
+        tmp_path = Path(tmp_dir.name)
         frame_temp = str(tmp_path / "frame_%04d.jpg")
         timestamps = snapshot_timestamps(
             duration,
@@ -549,10 +555,11 @@ def process_video(
             accurate_seek=args.accurate_seek,
             verbose=args.verror,
         )
-    except (
-        ffmpeg.Error,
-        ValueError, OSError,
-    ) as exc:
+    except ffmpeg.Error as exc:
+        stderr_output = exc.stderr.decode('utf-8', errors='replace') if exc.stderr else str(exc)
+        error_msg = stderr_output[-200:] if len(stderr_output) > 200 else stderr_output
+        return VideoResult(video=video, output=output, error=Exception(f"ffmpeg error: {error_msg}"))
+    except (ValueError, OSError) as exc:
         return VideoResult(video=video, output=output, error=exc)
     return VideoResult(video=video, output=output)
 
@@ -578,8 +585,12 @@ def main(argv: list[str] | None = None) -> int:
         console.no_color = True
         error_console.no_color = True
 
-    targets = [target.expanduser().resolve() for target in args.targets]
-    output_dir = args.output_dir.expanduser().resolve() if args.output_dir else None
+    try:
+        targets = [target.expanduser().resolve() for target in args.targets]
+        output_dir = args.output_dir.expanduser().resolve() if args.output_dir else None
+    except (OSError, RuntimeError) as exc:
+        error_console.print(f"[bold red]Invalid path:[/] {exc}")
+        return 2
 
     missing = next((t for t in targets if not t.exists()), None)
     if missing:
@@ -614,10 +625,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     shutdown = _ShutdownRequest()
+    shutdown_message_printed = False
+    shutdown_lock = threading.Lock()
+    signal_received = False
 
     def _handle_signal(signum: int, _frame: object) -> None:
-        shutdown.request()
-        console.print("\n[yellow]Interrupted — waiting for running jobs to finish...[/]")
+        nonlocal signal_received
+        with shutdown_lock:
+            nonlocal shutdown_message_printed
+            shutdown.request()
+            signal_received = True
+            if not shutdown_message_printed:
+                shutdown_message_printed = True
 
     # Register signal handlers (main thread only).
     signal.signal(signal.SIGINT, _handle_signal)
@@ -643,23 +662,29 @@ def main(argv: list[str] | None = None) -> int:
             cancelled_rest = False
             for future in as_completed(futures):
                 pending.discard(future)
-                if shutdown.is_set() and not cancelled_rest:
-                    # Cancel futures that haven't started yet.
-                    for p in pending:
-                        p.cancel()
-                    cancelled += len(pending)
-                    pending.clear()
-                    cancelled_rest = True
+                with shutdown_lock:
+                    if shutdown.is_set() and not cancelled_rest:
+                        if signal_received and shutdown_message_printed:
+                            console.print("\n[yellow]Interrupted — waiting for running jobs to finish...[/]")
+                            shutdown_message_printed = False
+                        for p in pending:
+                            p.cancel()
+                        pending.clear()
+                        cancelled_rest = True
                 try:
                     result = future.result(timeout=300)
                 except (TimeoutError, Exception) as exc:
                     vid = futures[future]
                     if isinstance(exc, TimeoutError):
                         future.cancel()
-                    failed += 1
-                    msg = "Processing timed out after 5 minutes" if isinstance(exc, TimeoutError) else str(exc) #noqa
-                    failed_videos.append((vid, msg))
-                    progress.update(task, description=f"[red]Failed:[/] {vid.name}")
+                    if not future.cancelled():
+                        failed += 1
+                        msg = "Processing timed out after 5 minutes" if isinstance(exc, TimeoutError) else str(exc) #noqa
+                        failed_videos.append((vid, msg))
+                        progress.update(task, description=f"[red]Failed:[/] {vid.name}")
+                    else:
+                        cancelled += 1
+                        progress.update(task, description=f"[yellow]Cancelled:[/] {vid.name}")
                     progress.advance(task)
                     continue
                 if result.error:
