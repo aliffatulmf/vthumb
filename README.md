@@ -2,7 +2,7 @@
 
 A command-line utility for generating thumbnail contact sheets from video files. It extracts evenly spaced frames from a video and composites them into a single JPEG grid image.
 
-Built on top of [FFmpeg](https://ffmpeg.org/). Both `ffmpeg` and `ffprobe` must be available in your system `PATH`.
+Built on top of [FFmpeg](https://ffmpeg.org/) via [ffmpeg-python](https://github.com/kkroening/ffmpeg-python). Both `ffmpeg` and `ffprobe` must be available in your system `PATH`.
 
 ## Installation
 
@@ -45,11 +45,19 @@ vthumb "D:\Videos" --recursive --output-dir .\output-thumbnails
 
 Output files are placed adjacent to the source video by default. For example, `video.mp4` produces `video.mp4.jpg`.
 
+When using `--output-dir`, filenames are prefixed with the parent folder name to avoid collisions:
+
+```
+vthumb /folder1/video.mp4 /folder2/video.mp4 --output-dir ./thumbs
+# Produces: ./thumbs/folder1__video.mp4.jpg
+#           ./thumbs/folder2__video.mp4.jpg
+```
+
 ## How It Works
 
-1. **Duration extraction** - The tool reads video duration from container metadata via `ffprobe`. No decoding is performed at this stage.
+1. **Duration extraction** - The tool reads video duration from container metadata via `ffprobe` (using `ffmpeg.probe()`). No decoding is performed at this stage.
 2. **Timestamp calculation** - Given a grid of `R x C` frames and a usable duration `D`, the interval is computed as `D / (R x C)`. The usable duration accounts for configurable skip offsets at the start and end of the video.
-3. **Frame extraction** - Each frame is extracted using `ffmpeg` with `-ss` positioned before `-i` (fast seek mode by default). Only the first video stream is mapped; audio, subtitle, and data tracks are excluded.
+3. **Frame extraction** - Each frame is extracted using `ffmpeg` via `ffmpeg-python` filter graph API with `-ss` positioned before `-i` (fast seek mode by default). Only the first video stream is mapped; audio, subtitle, and data tracks are excluded.
 4. **Tiling** - Extracted frames are scaled to the target width and composited into a grid using the `tile` filter, producing a single JPEG output.
 
 ### Seek modes
@@ -97,13 +105,3 @@ Files with unrecognized extensions are ignored.
 | `--accurate-seek`   | Use frame-accurate seeking (slower)                           | off                      |
 | `--verror`          | Display ffmpeg/ffprobe error output                           | off                      |
 | `--no-color`        | Disable colored terminal output                               | off                      |
-| `--ffmpeg PATH`     | Path to the ffmpeg executable                                 | `ffmpeg`                 |
-| `--ffprobe PATH`    | Path to the ffprobe executable                                | `ffprobe`                |
-
-## Exit Codes
-
-| Code | Meaning                                                        |
-| ---- | -------------------------------------------------------------- |
-| `0`  | All videos processed successfully                              |
-| `1`  | One or more videos failed, or no videos were found             |
-| `2`  | Invalid arguments or missing dependencies (`ffmpeg`/`ffprobe`) |
