@@ -642,6 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             pending = set(futures)
             cancelled_rest = False
             for future in as_completed(futures):
+                pending.discard(future)
                 if shutdown.is_set() and not cancelled_rest:
                     # Cancel futures that haven't started yet.
                     for p in pending:
@@ -660,9 +661,7 @@ def main(argv: list[str] | None = None) -> int:
                     failed_videos.append((vid, msg))
                     progress.update(task, description=f"[red]Failed:[/] {vid.name}")
                     progress.advance(task)
-                    pending.discard(future)
                     continue
-                pending.discard(future)
                 if result.error:
                     failed += 1
                     failed_videos.append((result.video, str(result.error)))
