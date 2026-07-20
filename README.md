@@ -39,6 +39,9 @@ vthumb "D:\Videos"
 # Customize grid layout and thumbnail size
 vthumb "D:\Videos" --row 4 --col 6 --size 480
 
+# Enable timestamp overlay on each frame
+vthumb "D:\Videos" --timestamp
+
 # Include subdirectories and specify output location
 vthumb "D:\Videos" --recursive --output-dir .\output-thumbnails
 ```
@@ -88,8 +91,8 @@ Files with unrecognized extensions are ignored.
 
 | Option              | Description                                                   | Default                  |
 | ------------------- | ------------------------------------------------------------- | ------------------------ |
-| `--row N`           | Number of grid rows                                           | `5`                      |
-| `--col N`           | Number of grid columns                                        | `5`                      |
+| `--row N`           | Number of grid rows                                           | auto-detect              |
+| `--col N`           | Number of grid columns                                        | auto-detect              |
 | `--size N`          | Thumbnail width in pixels (height is computed automatically)  | `720`                    |
 | `--quality N`       | JPEG quality (`1` = best, `31` = worst)                       | `2`                      |
 | `--padding N`       | Spacing between thumbnails in pixels                          | `4`                      |
@@ -105,3 +108,14 @@ Files with unrecognized extensions are ignored.
 | `--accurate-seek`   | Use frame-accurate seeking (slower)                           | off                      |
 | `--verror`          | Display ffmpeg/ffprobe error output                           | off                      |
 | `--no-color`        | Disable colored terminal output                               | off                      |
+
+### Grid auto-detection
+
+When `--row` and `--col` are not specified, the grid layout is automatically determined by video orientation:
+
+| Orientation | Rows | Columns |
+| ----------- | ---- | ------- |
+| Portrait    | 3    | 7       |
+| Landscape   | 5    | 5       |
+
+If either `--row` or `--col` is provided, the unspecified dimension uses the auto-detected default for the detected orientation. If both are provided, user values take full priority.

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -92,16 +92,21 @@ class VideoResult:
 
 
 class _ShutdownRequest:
-    """Thread-safe flag for graceful shutdown."""
+    """Thread-safe flag for graceful shutdown.
+
+    Uses a simple boolean instead of threading.Event to avoid
+    deadlocks when called from signal handlers. The GIL guarantees
+    atomicity for simple attribute assignment.
+    """
 
     def __init__(self) -> None:
-        self._event = threading.Event()
+        self._flag = False
 
     def request(self) -> None:
-        self._event.set()
+        self._flag = True
 
     def is_set(self) -> bool:
-        return self._event.is_set()
+        return self._flag
 
 
 def _compute_usable_range(
@@ -164,14 +169,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--row",
         type=positive_int,
-        default=5,
-        help="number of rows (default: 5)",
+        default=None,
+        help="number of rows (default: auto-detect from video orientation)",
     )
     parser.add_argument(
         "--col",
         type=positive_int,
-        default=5,
-        help="number of columns (default: 5)",
+        default=None,
+        help="number of columns (default: auto-detect from video orientation)",
     )
     parser.add_argument(
         "--size",
@@ -328,6 +333,31 @@ def video_duration(video: Path, verbosity: Literal["quiet", "error"] = "quiet") 
     return duration
 
 
+def is_portrait(video: Path, verbosity: Literal["quiet", "error"] = "quiet") -> bool:
+    """Check if a video is portrait (height > width).
+
+    Args:
+        video: Path to the video file.
+        verbosity: FFmpeg verbosity level.
+
+    Returns:
+        True if the video is portrait, False if landscape or square.
+    """
+    kwargs: dict[str, str] = {}
+    if verbosity == "error":
+        kwargs["v"] = "error"
+    try:
+        probe = ffmpeg.probe(str(video), **kwargs)
+    except ffmpeg.Error:
+        return False
+    for stream in probe.get("streams", []):
+        if stream.get("codec_type") == "video":
+            width = int(stream.get("width", 0))
+            height = int(stream.get("height", 0))
+            return height > width
+    return False
+
+
 def output_path(video: Path, output_dir: Path | None = None) -> Path:
     """Return the JPEG destination path for a thumbnail.
 
@@ -390,21 +420,21 @@ def snapshot_timestamps(
 
 
 def create_thumbnail(
-        video: Path,
-        output: Path,
-        *,
-        rows: int,
-        cols: int,
-        size: int,
-        quality: int,
-        padding: float,
-        margin: float,
-        timestamp: bool,
-        interval: float | None,
-        skip_start: float,
-        skip_end: float,
-        accurate_seek: bool,
-        verbose: bool,
+    video: Path,
+    output: Path,
+    *,
+    rows: int | None,
+    cols: int | None,
+    size: int,
+    quality: int,
+    padding: float,
+    margin: float,
+    timestamp: bool,
+    interval: float | None,
+    skip_start: float,
+    skip_end: float,
+    accurate_seek: bool,
+    verbose: bool,
 ) -> None:
     """Create a JPEG contact sheet from a video.
 
@@ -414,8 +444,8 @@ def create_thumbnail(
     Args:
         video: Path to the source video file.
         output: Path to write the output JPEG.
-        rows: Number of rows in the grid.
-        cols: Number of columns in the grid.
+        rows: Number of rows in the grid, or None to auto-detect.
+        cols: Number of columns in the grid, or None to auto-detect.
         size: Thumbnail width in pixels (height is computed automatically).
         quality: JPEG quality (1=best, 31=worst).
         padding: Padding in pixels between thumbnail cells.
@@ -437,6 +467,14 @@ def create_thumbnail(
     verbosity = "error" if verbose else "quiet"
 
     duration = video_duration(video, verbosity)
+
+    portrait = is_portrait(video, verbosity)
+    default_rows = 3 if portrait else 5
+    default_cols = 7 if portrait else 5
+
+    rows = rows if rows is not None else default_rows
+    cols = cols if cols is not None else default_cols
+
     usable_start, usable_end, usable_duration = _compute_usable_range(
         duration, skip_start, skip_end
     )
@@ -479,16 +517,17 @@ def create_thumbnail(
             if timestamp:
                 minutes = int(seek_time // 60)
                 seconds = seek_time % 60
-                # Backslash escapes colon for ffmpeg drawtext filter
-                time_text = f"{minutes:02d}\\:{seconds:05.2f}"
+                time_text = f"{minutes:02d}:{seconds:05.2f}"
+                font_size = max(size // 6, 40)
                 stream = stream.drawtext(
                     text=time_text,
-                    fontsize=14,
+                    fontsize=font_size,
+                    font="Arial",
                     fontcolor="white",
-                    borderw=1,
-                    bordercolor="black",
-                    x=5,
-                    y=5,
+                    borderw=4,
+                    bordercolor="black@0.8",
+                    x=8,
+                    y=8,
                 )
 
             out_kwargs = {"an": None, "sn": None, "dn": None, "frames:v": 1, "q:v": quality}
@@ -523,11 +562,7 @@ def create_thumbnail(
             raise ValueError(f"ffmpeg produced empty or missing output: {output}")
 
 
-def process_video(
-        video: Path,
-        output: Path,
-        args: argparse.Namespace
-) -> VideoResult:
+def process_video(video: Path, output: Path, args: argparse.Namespace) -> VideoResult:
     """Create one thumbnail and return its outcome for main-thread reporting.
 
     Args:
@@ -556,9 +591,7 @@ def process_video(
             verbose=args.verror,
         )
     except ffmpeg.Error as exc:
-        stderr_output = exc.stderr.decode('utf-8', errors='replace') if exc.stderr else str(exc)
-        error_msg = stderr_output[-200:] if len(stderr_output) > 200 else stderr_output
-        return VideoResult(video=video, output=output, error=Exception(f"ffmpeg error: {error_msg}"))
+        return VideoResult(video=video, output=output, error=exc)
     except (ValueError, OSError) as exc:
         return VideoResult(video=video, output=output, error=exc)
     return VideoResult(video=video, output=output)
@@ -665,7 +698,9 @@ def main(argv: list[str] | None = None) -> int:
                 with shutdown_lock:
                     if shutdown.is_set() and not cancelled_rest:
                         if signal_received and shutdown_message_printed:
-                            console.print("\n[yellow]Interrupted — waiting for running jobs to finish...[/]")
+                            console.print(
+                                "\n[yellow]Interrupted — waiting for running jobs to finish...[/]"
+                            )
                             shutdown_message_printed = False
                         for p in pending:
                             p.cancel()
@@ -679,7 +714,11 @@ def main(argv: list[str] | None = None) -> int:
                         future.cancel()
                     if not future.cancelled():
                         failed += 1
-                        msg = "Processing timed out after 5 minutes" if isinstance(exc, TimeoutError) else str(exc) #noqa
+                        msg = (
+                            "Processing timed out after 5 minutes"
+                            if isinstance(exc, TimeoutError)
+                            else str(exc)
+                        )  # noqa
                         failed_videos.append((vid, msg))
                         progress.update(task, description=f"[red]Failed:[/] {vid.name}")
                     else:
@@ -689,7 +728,15 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 if result.error:
                     failed += 1
-                    failed_videos.append((result.video, str(result.error)))
+                    if isinstance(result.error, ffmpeg.Error):
+                        stderr_out = result.error.stderr
+                        if stderr_out:
+                            msg = stderr_out.decode("utf-8", errors="replace")[-200:]
+                        else:
+                            msg = str(result.error)
+                    else:
+                        msg = str(result.error)
+                    failed_videos.append((result.video, msg))
                     progress.update(task, description=f"[red]Failed:[/] {result.video.name}")
                 else:
                     succeeded += 1

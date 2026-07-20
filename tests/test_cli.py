@@ -12,6 +12,7 @@ from vthumb.cli import (
     build_parser,
     create_thumbnail,
     find_videos,
+    is_portrait,
     jpeg_quality,
     main,
     non_negative_float,
@@ -105,8 +106,8 @@ def test_jpeg_quality_rejects_non_numeric():
 def test_build_parser_defaults():
     parser = build_parser()
     args = parser.parse_args(["video.mp4"])
-    assert args.row == 5
-    assert args.col == 5
+    assert args.row is None
+    assert args.col is None
     assert args.size == 720
     assert args.quality == 2
     assert args.padding == 4
@@ -366,9 +367,11 @@ def test_video_duration_non_numeric(tmp_path: Path):
 
 def test_video_duration_called_process_error(tmp_path: Path):
     fake_video = tmp_path / "video.mp4"
-    with patch("vthumb.cli.ffmpeg.probe", side_effect=ff.Error("ffprobe", b"", b"error")):
-        with pytest.raises(ValueError, match="ffprobe failed"):
-            video_duration(fake_video)
+    with (
+        patch("vthumb.cli.ffmpeg.probe", side_effect=ff.Error("ffprobe", b"", b"error")),
+        pytest.raises(ValueError, match="ffprobe failed"),
+    ):
+        video_duration(fake_video)
 
 
 def test_video_duration_verbosity_error(tmp_path: Path):
@@ -487,8 +490,8 @@ def test_snapshot_timestamps_negative_count():
 def _make_args(**overrides):
     """Build a Namespace with all required fields for process_video."""
     defaults = dict(
-        row=5,
-        col=5,
+        row=None,
+        col=None,
         size=720,
         quality=2,
         padding=4,
@@ -542,8 +545,8 @@ def test_process_video_passes_new_flags(tmp_path: Path):
         mock_create.assert_called_once_with(
             video,
             dest,
-            rows=5,
-            cols=5,
+            rows=None,
+            cols=None,
             size=720,
             quality=1,
             padding=0,
@@ -747,24 +750,26 @@ def test_create_thumbnail_video_too_short(tmp_path: Path):
     video = tmp_path / "video.mp4"
     output = tmp_path / "video.mp4.jpg"
     # duration=0 after fallback triggers the ValueError
-    with patch("vthumb.cli.video_duration", return_value=0.0):
-        with pytest.raises(ValueError, match="too short"):
-            create_thumbnail(
-                video,
-                output,
-                rows=5,
-                cols=5,
-                size=320,
-                quality=2,
-                padding=4,
-                margin=4,
-                timestamp=False,
-                interval=None,
-                skip_start=10,
-                skip_end=10,
-                accurate_seek=False,
-                verbose=False,
-            )
+    with (
+        patch("vthumb.cli.video_duration", return_value=0.0),
+        pytest.raises(ValueError, match="too short"),
+    ):
+        create_thumbnail(
+            video,
+            output,
+            rows=5,
+            cols=5,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=10,
+            skip_end=10,
+            accurate_seek=False,
+            verbose=False,
+        )
 
 
 def test_create_thumbnail_ffmpeg_fails(tmp_path: Path):
@@ -847,3 +852,199 @@ def test_shutdown_request_set():
     req = _ShutdownRequest()
     req.request()
     assert req.is_set() is True
+
+
+# ---------------------------------------------------------------------------
+# is_portrait
+# ---------------------------------------------------------------------------
+
+
+def test_is_portrait_true(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {
+            "streams": [{"codec_type": "video", "width": 1080, "height": 1920}],
+        }
+        assert is_portrait(video) is True
+
+
+def test_is_portrait_false_landscape(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {
+            "streams": [{"codec_type": "video", "width": 1920, "height": 1080}],
+        }
+        assert is_portrait(video) is False
+
+
+def test_is_portrait_false_square(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {
+            "streams": [{"codec_type": "video", "width": 1080, "height": 1080}],
+        }
+        assert is_portrait(video) is False
+
+
+def test_is_portrait_no_video_stream(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    with patch("vthumb.cli.ffmpeg.probe") as mock_probe:
+        mock_probe.return_value = {"streams": [{"codec_type": "audio"}]}
+        assert is_portrait(video) is False
+
+
+def test_is_portrait_probe_error(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    with patch("vthumb.cli.ffmpeg.probe", side_effect=ff.Error("probe", b"", b"error")):
+        assert is_portrait(video) is False
+
+
+# ---------------------------------------------------------------------------
+# create_thumbnail auto-detection
+# ---------------------------------------------------------------------------
+
+
+def test_create_thumbnail_auto_detect_portrait(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    output = tmp_path / "video.mp4.jpg"
+
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.is_portrait", return_value=True),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
+        create_thumbnail(
+            video,
+            output,
+            rows=None,
+            cols=None,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
+            verbose=False,
+        )
+        assert output.exists()
+
+
+def test_create_thumbnail_auto_detect_landscape(tmp_path: Path):
+    video = tmp_path / "video.mp4"
+    output = tmp_path / "video.mp4.jpg"
+
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.is_portrait", return_value=False),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
+        create_thumbnail(
+            video,
+            output,
+            rows=None,
+            cols=None,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
+            verbose=False,
+        )
+        assert output.exists()
+
+
+def test_create_thumbnail_user_col_only_portrait(tmp_path: Path):
+    """User provides --col 2, portrait video: rows should auto-detect to 3."""
+    video = tmp_path / "video.mp4"
+    output = tmp_path / "video.mp4.jpg"
+
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.is_portrait", return_value=True),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
+        create_thumbnail(
+            video,
+            output,
+            rows=None,
+            cols=2,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
+            verbose=False,
+        )
+        assert output.exists()
+
+
+def test_create_thumbnail_user_row_only_landscape(tmp_path: Path):
+    """User provides --row 2, landscape video: cols should default to 5."""
+    video = tmp_path / "video.mp4"
+    output = tmp_path / "video.mp4.jpg"
+
+    with (
+        patch("vthumb.cli.video_duration", return_value=60.0),
+        patch("vthumb.cli.is_portrait", return_value=False),
+        patch("vthumb.cli.ffmpeg") as mock_ff,
+    ):
+        mock_ff.probe.return_value = {"format": {"duration": "60.0"}}
+
+        def fake_run(**kwargs):
+            out = Path(mock_ff.output.call_args[0][1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\xff")
+
+        mock_ff.output.return_value.overwrite_output.return_value.run = fake_run
+        create_thumbnail(
+            video,
+            output,
+            rows=2,
+            cols=None,
+            size=320,
+            quality=2,
+            padding=4,
+            margin=4,
+            timestamp=False,
+            interval=None,
+            skip_start=0,
+            skip_end=0,
+            accurate_seek=False,
+            verbose=False,
+        )
+        assert output.exists()
